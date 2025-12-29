@@ -8,15 +8,36 @@
     :root { color-scheme: light; }
     body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; margin: 0; background: #fafafa; color: #111; }
     .wrap { max-width: 1100px; margin: 0 auto; padding: 28px 18px 60px; }
+
+    /* NEW: top notice */
+    .notice {
+      background: #fff;
+      border: 1px solid #f0c2c2;
+      border-left: 6px solid #7a0000;
+      border-radius: 12px;
+      padding: 12px 14px;
+      margin-bottom: 14px;
+      box-shadow: 0 1px 2px rgba(0,0,0,0.04);
+    }
+    .notice strong { color: #7a0000; }
+    .notice p { margin: 0; font-size: 13px; line-height: 1.45; color: #2b2b2b; }
+
     header { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; margin-bottom: 18px; }
     h1 { font-size: 20px; margin: 0 0 6px; }
     .sub { font-size: 13px; color: #444; line-height: 1.45; margin: 0; }
     .card { background: #fff; border: 1px solid #e6e6e6; border-radius: 12px; padding: 14px; box-shadow: 0 1px 2px rgba(0,0,0,0.04); }
     .row { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; justify-content: space-between; }
     .pill { font-size: 12px; padding: 6px 10px; border-radius: 999px; background: #f3f3f3; border: 1px solid #e6e6e6; }
+
+    /* Button styles */
     .btn { appearance: none; border: 1px solid #111; background: #111; color: #fff; padding: 9px 12px; border-radius: 10px; font-weight: 600; cursor: pointer; }
     .btn.secondary { background: #fff; color: #111; }
     .btn:disabled { opacity: 0.45; cursor: not-allowed; }
+
+    /* NEW: green claim button for connected wallet row */
+    .btn.claim-green { border-color: #0b6b2f; background: #0b6b2f; color: #fff; }
+    .btn.claim-green:hover { filter: brightness(0.96); }
+
     .status { margin-top: 10px; font-size: 13px; color: #333; white-space: pre-wrap; }
     .status.error { color: #b00020; }
     .status.ok { color: #0b6b2f; }
@@ -37,6 +58,12 @@
 </head>
 <body>
   <div class="wrap">
+
+    <!-- NEW: notice at very top -->
+    <div class="notice">
+      <p><strong>Notice:</strong> Due to testnet ETH limitations, the actual ETH you’ll receive is only <strong>1/1000</strong> of your displayed distribution amount.</p>
+    </div>
+
     <header>
       <div>
         <h1>Merkle Claims</h1>
@@ -85,8 +112,11 @@
     // -----------------------------
     // CONFIG (EDIT THESE)
     // -----------------------------
-    const CONTRACT_ADDRESS = "0x9dA4ba1ee2f64Ecd62f5448b6a80b767cD78D8CA"; // change if you redeploy
+    const CONTRACT_ADDRESS = "0x75Ec7Eb393c7794E5737613da4D515afc3b00f7D"; // change if you redeploy
     const CLAIMS_JSON_URL = "./claims.json"; // or "./merkle.json" if that's your filename
+
+    // NEW: visualization multiplier (does NOT affect tx)
+    const DISPLAY_MULTIPLIER = 1000;
 
     const BASE_SEPOLIA = {
       chainIdHex: "0x14a34", // 84532
@@ -225,24 +255,42 @@
         const amountWeiStr = entry.amountWei;
         const proof = entry.proof || [];
 
-        // Derive ETH display. Prefer computed from wei (most reliable).
-        let amountEthDisplay = "";
+        // Derive ETH display from wei (most reliable).
+        let amountEthDisplayRaw = "";
         try {
-          amountEthDisplay = ethers.formatEther(BigInt(amountWeiStr));
+          amountEthDisplayRaw = ethers.formatEther(BigInt(amountWeiStr));
         } catch {
-          amountEthDisplay = entry.amountEth || "";
+          amountEthDisplayRaw = entry.amountEth || "";
+        }
+
+        // NEW: multiply display amount by DISPLAY_MULTIPLIER (visualization only)
+        let amountEthDisplayMultiplied = "";
+        try {
+          // Multiply as decimal string using JS number can lose precision, so do integer math in wei:
+          // displayedWei = amountWei * DISPLAY_MULTIPLIER, then formatEther
+          const displayedWei = BigInt(amountWeiStr) * BigInt(DISPLAY_MULTIPLIER);
+          amountEthDisplayMultiplied = ethers.formatEther(displayedWei);
+        } catch {
+          // fallback: best-effort string multiply (should not happen if amountWeiStr is valid)
+          amountEthDisplayMultiplied = amountEthDisplayRaw;
         }
 
         out.push({
           wallet: cs,
-          amountWeiStr,
-          amountEthDisplay,
+          amountWeiStr,                 // used for transaction (actual 1/1000 values)
+          amountEthDisplay: amountEthDisplayMultiplied, // used for table display (multiplied)
           proof
         });
       }
 
-      // Sort by address for stable rendering (optional)
-      out.sort((a, b) => a.wallet.localeCompare(b.wallet));
+      // NEW: sort by amount (descending), based on ACTUAL amountWeiStr (equivalent to display ordering too)
+      out.sort((a, b) => {
+        const aw = BigInt(a.amountWeiStr);
+        const bw = BigInt(b.amountWeiStr);
+        if (aw === bw) return a.wallet.localeCompare(b.wallet);
+        return (bw > aw) ? 1 : -1;
+      });
+
       return out;
     }
 
@@ -353,6 +401,7 @@
         // Default: disabled until connected
         if (!signerAddress || !contract) {
           btn.disabled = true;
+          btn.classList.remove("claim-green");
           if (hint) hint.textContent = "Connect wallet to claim.";
           return;
         }
@@ -360,6 +409,7 @@
         const isMe = w.toLowerCase() === signerAddress.toLowerCase();
         if (!isMe) {
           btn.disabled = true;
+          btn.classList.remove("claim-green");
           if (hint) hint.textContent = "Only this wallet can claim its allocation.";
           return;
         }
@@ -368,11 +418,13 @@
         if (ctx) {
           if (Number(ctx.start) === 0) {
             btn.disabled = true;
+            btn.classList.remove("claim-green");
             if (hint) hint.textContent = "Claims not opened yet.";
             return;
           }
           if (ctx.paused) {
             btn.disabled = true;
+            btn.classList.remove("claim-green");
             if (hint) hint.textContent = "Claims are paused.";
             return;
           }
@@ -380,13 +432,15 @@
           const end = Number(ctx.start) + Number(ctx.period);
           if (now >= end) {
             btn.disabled = true;
+            btn.classList.remove("claim-green");
             if (hint) hint.textContent = "Claim period has ended.";
             return;
           }
         }
 
-        // Otherwise enabled; we'll check "claimed" on click (keeps UI snappy)
+        // Enabled for connected wallet row; make it green
         btn.disabled = false;
+        btn.classList.add("claim-green");
         if (hint) hint.textContent = "";
       });
     }
@@ -418,12 +472,13 @@
           return;
         }
 
-        // Prepare tx
+        // Prepare tx (IMPORTANT: use actual amountWeiStr from JSON; do NOT apply multiplier)
         const amountWei = BigInt(row.amountWeiStr);
         const proof = row.proof;
 
         btn.disabled = true;
         btn.textContent = "Claiming…";
+        btn.classList.remove("claim-green");
 
         const tx = await contract.claim(amountWei, proof);
         setTopStatus("Transaction sent. Waiting for confirmation...\n" + tx.hash, "ok");
