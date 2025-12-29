@@ -347,44 +347,44 @@
     }
 
     async function refreshRowStates() {
-      // Optional on-chain checks to guide UI: paused, claim window, whether user already claimed.
-      // Keep simple: only check if connected.
       if (!contract || !signerAddress) {
         updateClaimButtonsUI();
         return;
       }
 
       try {
-        const [paused, start, period] = await Promise.all([
-          contract.paused(),
-          contract.claimStartTime(),
-          contract.CLAIM_PERIOD()
+        const [paused, start, period, block] = await Promise.all([
+          contract.paused(),                 // boolean
+          contract.claimStartTime(),         // bigint
+          contract.CLAIM_PERIOD(),           // bigint
+          provider.getBlock("latest")        // includes timestamp (number)
         ]);
 
-        // claimStartTime == 0 => not opened yet
+        const now = BigInt(block.timestamp); // chain time in seconds
+
         let windowMsg = "";
-        if (Number(start) === 0) {
+        if (start === 0n) {
           windowMsg = "Claims not opened yet.";
         } else {
-          const now = Math.floor(Date.now() / 1000);
-          const end = Number(start) + Number(period);
+          const end = start + period;        // bigint
           if (paused) windowMsg = "Claims are paused.";
           else if (now >= end) windowMsg = "Claim period has ended.";
           else windowMsg = "Claim period is active.";
         }
 
-        // Update status pill text lightly
         const net = await provider.getNetwork();
         setNetworkLabel(Number(net.chainId));
 
-        // Store global for UI
-        window.__claimContext = { paused, start: Number(start), period: Number(period), windowMsg };
-        setTopStatus(`Connected: ${shortAddr(signerAddress)}. ${windowMsg}`, "ok");
+        // Store as bigints (do not Number() them)
+        window.__claimContext = { paused, start, period, now, windowMsg };
 
+        setTopStatus(`Connected: ${shortAddr(signerAddress)}. ${windowMsg}`, "ok");
       } catch (e) {
-        // Don’t block rendering; just show error.
         setTopStatus("Connected, but failed to read contract state: " + normalizeError(e), "error");
       }
+
+      console.log("start raw:", start, "period raw:", period);
+      console.log("start Number:", Number(start), "period Number:", Number(period));
 
       updateClaimButtonsUI();
     }
@@ -416,7 +416,7 @@
 
         // If we have claim window info, gate by it
         if (ctx) {
-          if (Number(ctx.start) === 0) {
+          if (ctx.start === 0n) {
             btn.disabled = true;
             btn.classList.remove("claim-green");
             if (hint) hint.textContent = "Claims not opened yet.";
@@ -428,8 +428,10 @@
             if (hint) hint.textContent = "Claims are paused.";
             return;
           }
-          const now = Math.floor(Date.now() / 1000);
-          const end = Number(ctx.start) + Number(ctx.period);
+
+          const end = ctx.start + ctx.period; // bigint
+          const now = ctx.now ?? BigInt(Math.floor(Date.now() / 1000)); // fallback only
+
           if (now >= end) {
             btn.disabled = true;
             btn.classList.remove("claim-green");
