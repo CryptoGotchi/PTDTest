@@ -1,0 +1,489 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Merkle Claims</title>
+  <style>
+    :root { color-scheme: light; }
+    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; margin: 0; background: #fafafa; color: #111; }
+    .wrap { max-width: 1100px; margin: 0 auto; padding: 28px 18px 60px; }
+    header { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; margin-bottom: 18px; }
+    h1 { font-size: 20px; margin: 0 0 6px; }
+    .sub { font-size: 13px; color: #444; line-height: 1.45; margin: 0; }
+    .card { background: #fff; border: 1px solid #e6e6e6; border-radius: 12px; padding: 14px; box-shadow: 0 1px 2px rgba(0,0,0,0.04); }
+    .row { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; justify-content: space-between; }
+    .pill { font-size: 12px; padding: 6px 10px; border-radius: 999px; background: #f3f3f3; border: 1px solid #e6e6e6; }
+    .btn { appearance: none; border: 1px solid #111; background: #111; color: #fff; padding: 9px 12px; border-radius: 10px; font-weight: 600; cursor: pointer; }
+    .btn.secondary { background: #fff; color: #111; }
+    .btn:disabled { opacity: 0.45; cursor: not-allowed; }
+    .status { margin-top: 10px; font-size: 13px; color: #333; white-space: pre-wrap; }
+    .status.error { color: #b00020; }
+    .status.ok { color: #0b6b2f; }
+    .toolbar { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; justify-content: space-between; margin: 16px 0; }
+    input[type="search"] { width: min(520px, 100%); padding: 10px 12px; border-radius: 10px; border: 1px solid #ddd; background: #fff; }
+    table { width: 100%; border-collapse: collapse; background: #fff; border: 1px solid #e6e6e6; border-radius: 12px; overflow: hidden; }
+    th, td { padding: 12px; border-bottom: 1px solid #eee; text-align: left; vertical-align: middle; }
+    th { font-size: 12px; letter-spacing: 0.02em; text-transform: uppercase; color: #444; background: #fcfcfc; }
+    td { font-size: 13px; }
+    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; }
+    .right { text-align: right; }
+    .muted { color: #666; font-size: 12px; }
+    .tag { font-size: 12px; padding: 4px 8px; border-radius: 8px; border: 1px solid #e6e6e6; background: #f8f8f8; display: inline-block; }
+    .row-hi { background: #fffdf2; }
+    footer { margin-top: 16px; font-size: 12px; color: #555; }
+    a { color: inherit; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <header>
+      <div>
+        <h1>Merkle Claims</h1>
+        <p class="sub">
+          Connect your wallet to claim your allocation. Only the connected wallet can claim for itself.
+        </p>
+      </div>
+      <div class="card" style="min-width: 320px;">
+        <div class="row">
+          <div class="pill" id="netPill">Network: <span class="mono" id="netLabel">—</span></div>
+          <button class="btn" id="connectBtn">Connect</button>
+        </div>
+        <div class="status" id="topStatus"></div>
+      </div>
+    </header>
+
+    <div class="toolbar">
+      <input id="search" type="search" placeholder="Search wallet address (0x…)" autocomplete="off" />
+      <div class="muted">
+        Contract: <a class="mono" id="contractLink" target="_blank" rel="noreferrer">—</a>
+      </div>
+    </div>
+
+    <table>
+      <thead>
+        <tr>
+          <th>Wallet</th>
+          <th class="right">Amount (ETH)</th>
+          <th class="right">Claim</th>
+        </tr>
+      </thead>
+      <tbody id="tbody">
+        <tr><td colspan="3" class="muted">Loading claims.json…</td></tr>
+      </tbody>
+    </table>
+
+    <footer>
+      Notes: GitHub Pages serves <span class="mono">claims.json</span> fine. If you open this file locally (file://), the JSON fetch may fail—use a local server or GitHub Pages.
+    </footer>
+  </div>
+
+  <!-- Ethers.js v6 via CDN -->
+  <script src="https://cdn.jsdelivr.net/npm/ethers@6.13.4/dist/ethers.umd.min.js"></script>
+
+  <script>
+    // -----------------------------
+    // CONFIG (EDIT THESE)
+    // -----------------------------
+    const CONTRACT_ADDRESS = "0x9dA4ba1ee2f64Ecd62f5448b6a80b767cD78D8CA"; // change if you redeploy
+    const CLAIMS_JSON_URL = "./claims.json"; // or "./merkle.json" if that's your filename
+
+    const BASE_SEPOLIA = {
+      chainIdHex: "0x14a34", // 84532
+      chainName: "Base Sepolia",
+      nativeCurrency: { name: "Ether", symbol: "ETH", decimals: 18 },
+      rpcUrls: ["https://sepolia.base.org"],
+      blockExplorerUrls: ["https://sepolia.basescan.org"]
+    };
+
+    // Minimal ABI: only what we need
+    const ABI = [
+      "function claim(uint256 amount, bytes32[] proof) external",
+      "function claimed(address) view returns (bool)",
+      "function merkleRoot() view returns (bytes32)",
+      "function claimStartTime() view returns (uint256)",
+      "function CLAIM_PERIOD() view returns (uint256)",
+      "function paused() view returns (bool)"
+    ];
+
+    // -----------------------------
+    // STATE
+    // -----------------------------
+    let provider = null;
+    let signer = null;
+    let signerAddress = null;
+    let contract = null;
+    let claimsData = null;
+    let rows = [];
+
+    const el = (id) => document.getElementById(id);
+
+    function setTopStatus(msg, kind = "") {
+      const s = el("topStatus");
+      s.textContent = msg || "";
+      s.className = "status " + (kind || "");
+    }
+
+    function shortAddr(a) {
+      if (!a) return "—";
+      return a.slice(0, 6) + "…" + a.slice(-4);
+    }
+
+    function toChecksum(a) {
+      try { return ethers.getAddress(a); } catch { return null; }
+    }
+
+    function setNetworkLabel(chainId) {
+      const label = (chainId === 84532) ? "Base Sepolia (84532)" : `Unknown (${chainId})`;
+      el("netLabel").textContent = label;
+    }
+
+    async function ensureBaseSepolia() {
+      if (!window.ethereum) throw new Error("No browser wallet found. Install MetaMask.");
+
+      const current = await window.ethereum.request({ method: "eth_chainId" });
+      if (current === BASE_SEPOLIA.chainIdHex) return;
+
+      try {
+        await window.ethereum.request({
+          method: "wallet_switchEthereumChain",
+          params: [{ chainId: BASE_SEPOLIA.chainIdHex }]
+        });
+      } catch (err) {
+        // 4902 = chain not added
+        if (err && err.code === 4902) {
+          await window.ethereum.request({
+            method: "wallet_addEthereumChain",
+            params: [{
+              chainId: BASE_SEPOLIA.chainIdHex,
+              chainName: BASE_SEPOLIA.chainName,
+              nativeCurrency: BASE_SEPOLIA.nativeCurrency,
+              rpcUrls: BASE_SEPOLIA.rpcUrls,
+              blockExplorerUrls: BASE_SEPOLIA.blockExplorerUrls
+            }]
+          });
+        } else {
+          throw err;
+        }
+      }
+    }
+
+    async function connect() {
+      setTopStatus("");
+
+      if (!window.ethereum) {
+        setTopStatus("No browser wallet found. Install MetaMask.", "error");
+        return;
+      }
+
+      try {
+        await ensureBaseSepolia();
+
+        provider = new ethers.BrowserProvider(window.ethereum);
+        signer = await provider.getSigner();
+        signerAddress = await signer.getAddress();
+
+        const network = await provider.getNetwork();
+        setNetworkLabel(Number(network.chainId));
+
+        contract = new ethers.Contract(CONTRACT_ADDRESS, ABI, signer);
+
+        el("connectBtn").textContent = "Connected: " + shortAddr(signerAddress);
+        el("connectBtn").classList.add("secondary");
+
+        await refreshRowStates();
+        setTopStatus("Connected. You can claim if your address is in the list and the claim window is active.", "ok");
+      } catch (e) {
+        setTopStatus(normalizeError(e), "error");
+      }
+    }
+
+    function normalizeError(e) {
+      if (!e) return "Unknown error";
+      if (typeof e === "string") return e;
+      if (e.shortMessage) return e.shortMessage;
+      if (e.message) return e.message;
+      try { return JSON.stringify(e); } catch { return String(e); }
+    }
+
+    async function loadClaims() {
+      const res = await fetch(CLAIMS_JSON_URL, { cache: "no-store" });
+      if (!res.ok) throw new Error(`Failed to load ${CLAIMS_JSON_URL} (${res.status})`);
+      const data = await res.json();
+      if (!data || !data.claims) throw new Error("claims.json format invalid: missing 'claims' object");
+      return data;
+    }
+
+    function buildRowsFromClaims(data) {
+      const claims = data.claims;
+
+      const out = [];
+      for (const [wallet, entry] of Object.entries(claims)) {
+        const cs = toChecksum(wallet);
+        if (!cs) continue;
+
+        const amountWeiStr = entry.amountWei;
+        const proof = entry.proof || [];
+
+        // Derive ETH display. Prefer computed from wei (most reliable).
+        let amountEthDisplay = "";
+        try {
+          amountEthDisplay = ethers.formatEther(BigInt(amountWeiStr));
+        } catch {
+          amountEthDisplay = entry.amountEth || "";
+        }
+
+        out.push({
+          wallet: cs,
+          amountWeiStr,
+          amountEthDisplay,
+          proof
+        });
+      }
+
+      // Sort by address for stable rendering (optional)
+      out.sort((a, b) => a.wallet.localeCompare(b.wallet));
+      return out;
+    }
+
+    function renderTable(filter = "") {
+      const tbody = el("tbody");
+      tbody.innerHTML = "";
+
+      const f = (filter || "").trim().toLowerCase();
+
+      const filtered = rows.filter(r => !f || r.wallet.toLowerCase().includes(f));
+      if (filtered.length === 0) {
+        const tr = document.createElement("tr");
+        tr.innerHTML = `<td colspan="3" class="muted">No matches.</td>`;
+        tbody.appendChild(tr);
+        return;
+      }
+
+      for (const r of filtered) {
+        const tr = document.createElement("tr");
+        const isMe = signerAddress && r.wallet.toLowerCase() === signerAddress.toLowerCase();
+        if (isMe) tr.classList.add("row-hi");
+
+        tr.innerHTML = `
+          <td class="mono">${r.wallet}</td>
+          <td class="right mono">${formatEth(r.amountEthDisplay)}</td>
+          <td class="right">
+            <button class="btn" data-wallet="${r.wallet}">Claim</button>
+            <div class="muted" data-hint="${r.wallet}"></div>
+          </td>
+        `;
+
+        tbody.appendChild(tr);
+      }
+
+      // Attach click handlers
+      tbody.querySelectorAll("button.btn").forEach(btn => {
+        btn.addEventListener("click", async () => {
+          const w = btn.getAttribute("data-wallet");
+          await claimForRow(w, btn);
+        });
+      });
+
+      // Update enabled/disabled state after render
+      updateClaimButtonsUI();
+    }
+
+    function formatEth(x) {
+      if (!x) return "—";
+      // Keep it readable but not overly rounded. Adjust to taste.
+      // If it's a long decimal, show up to 8 decimals (without losing the full amount in transaction).
+      const parts = String(x).split(".");
+      if (parts.length === 1) return parts[0];
+      return parts[0] + "." + parts[1].slice(0, 8);
+    }
+
+    async function refreshRowStates() {
+      // Optional on-chain checks to guide UI: paused, claim window, whether user already claimed.
+      // Keep simple: only check if connected.
+      if (!contract || !signerAddress) {
+        updateClaimButtonsUI();
+        return;
+      }
+
+      try {
+        const [paused, start, period] = await Promise.all([
+          contract.paused(),
+          contract.claimStartTime(),
+          contract.CLAIM_PERIOD()
+        ]);
+
+        // claimStartTime == 0 => not opened yet
+        let windowMsg = "";
+        if (Number(start) === 0) {
+          windowMsg = "Claims not opened yet.";
+        } else {
+          const now = Math.floor(Date.now() / 1000);
+          const end = Number(start) + Number(period);
+          if (paused) windowMsg = "Claims are paused.";
+          else if (now >= end) windowMsg = "Claim period has ended.";
+          else windowMsg = "Claim period is active.";
+        }
+
+        // Update status pill text lightly
+        const net = await provider.getNetwork();
+        setNetworkLabel(Number(net.chainId));
+
+        // Store global for UI
+        window.__claimContext = { paused, start: Number(start), period: Number(period), windowMsg };
+        setTopStatus(`Connected: ${shortAddr(signerAddress)}. ${windowMsg}`, "ok");
+
+      } catch (e) {
+        // Don’t block rendering; just show error.
+        setTopStatus("Connected, but failed to read contract state: " + normalizeError(e), "error");
+      }
+
+      updateClaimButtonsUI();
+    }
+
+    function updateClaimButtonsUI() {
+      const tbody = el("tbody");
+      const buttons = tbody.querySelectorAll("button.btn");
+      const ctx = window.__claimContext || null;
+
+      buttons.forEach(btn => {
+        const w = btn.getAttribute("data-wallet");
+        const hint = tbody.querySelector(`div[data-hint="${w}"]`);
+
+        // Default: disabled until connected
+        if (!signerAddress || !contract) {
+          btn.disabled = true;
+          if (hint) hint.textContent = "Connect wallet to claim.";
+          return;
+        }
+
+        const isMe = w.toLowerCase() === signerAddress.toLowerCase();
+        if (!isMe) {
+          btn.disabled = true;
+          if (hint) hint.textContent = "Only this wallet can claim its allocation.";
+          return;
+        }
+
+        // If we have claim window info, gate by it
+        if (ctx) {
+          if (Number(ctx.start) === 0) {
+            btn.disabled = true;
+            if (hint) hint.textContent = "Claims not opened yet.";
+            return;
+          }
+          if (ctx.paused) {
+            btn.disabled = true;
+            if (hint) hint.textContent = "Claims are paused.";
+            return;
+          }
+          const now = Math.floor(Date.now() / 1000);
+          const end = Number(ctx.start) + Number(ctx.period);
+          if (now >= end) {
+            btn.disabled = true;
+            if (hint) hint.textContent = "Claim period has ended.";
+            return;
+          }
+        }
+
+        // Otherwise enabled; we'll check "claimed" on click (keeps UI snappy)
+        btn.disabled = false;
+        if (hint) hint.textContent = "";
+      });
+    }
+
+    async function claimForRow(wallet, btn) {
+      try {
+        setTopStatus("");
+
+        if (!signerAddress || !contract) {
+          setTopStatus("Connect your wallet first.", "error");
+          return;
+        }
+
+        if (wallet.toLowerCase() !== signerAddress.toLowerCase()) {
+          setTopStatus("You can only claim for the connected wallet.", "error");
+          return;
+        }
+
+        const row = rows.find(r => r.wallet.toLowerCase() === wallet.toLowerCase());
+        if (!row) {
+          setTopStatus("Wallet not found in claims list.", "error");
+          return;
+        }
+
+        // On-chain check: already claimed?
+        const already = await contract.claimed(signerAddress);
+        if (already) {
+          setTopStatus("This wallet has already claimed.", "ok");
+          return;
+        }
+
+        // Prepare tx
+        const amountWei = BigInt(row.amountWeiStr);
+        const proof = row.proof;
+
+        btn.disabled = true;
+        btn.textContent = "Claiming…";
+
+        const tx = await contract.claim(amountWei, proof);
+        setTopStatus("Transaction sent. Waiting for confirmation...\n" + tx.hash, "ok");
+
+        const receipt = await tx.wait();
+        if (receipt && receipt.status === 1n) {
+          setTopStatus("Claim successful.\n" + tx.hash, "ok");
+        } else {
+          setTopStatus("Transaction failed or reverted.\n" + tx.hash, "error");
+        }
+
+      } catch (e) {
+        setTopStatus(normalizeError(e), "error");
+      } finally {
+        // Restore button label and state
+        const isMe = signerAddress && wallet.toLowerCase() === signerAddress.toLowerCase();
+        btn.textContent = "Claim";
+        btn.disabled = !isMe; // final UI pass will re-gate
+        await refreshRowStates();
+      }
+    }
+
+    async function init() {
+      // Contract link
+      const explorer = BASE_SEPOLIA.blockExplorerUrls[0];
+      el("contractLink").textContent = CONTRACT_ADDRESS;
+      el("contractLink").href = `${explorer}/address/${CONTRACT_ADDRESS}`;
+
+      // Initial network label (if wallet exists)
+      if (window.ethereum) {
+        try {
+          const chainIdHex = await window.ethereum.request({ method: "eth_chainId" });
+          setNetworkLabel(parseInt(chainIdHex, 16));
+        } catch {
+          setNetworkLabel(null);
+        }
+
+        // React to chain/account changes
+        window.ethereum.on("chainChanged", () => window.location.reload());
+        window.ethereum.on("accountsChanged", () => window.location.reload());
+      } else {
+        setNetworkLabel(null);
+        setTopStatus("No browser wallet found. Install MetaMask.", "error");
+      }
+
+      // Load claims and render
+      try {
+        claimsData = await loadClaims();
+        rows = buildRowsFromClaims(claimsData);
+        renderTable("");
+      } catch (e) {
+        el("tbody").innerHTML = `<tr><td colspan="3" class="muted">Failed to load claims: ${normalizeError(e)}</td></tr>`;
+      }
+
+      // Wire UI
+      el("connectBtn").addEventListener("click", connect);
+      el("search").addEventListener("input", (ev) => renderTable(ev.target.value));
+    }
+
+    init();
+  </script>
+</body>
+</html>
