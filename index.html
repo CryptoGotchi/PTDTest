@@ -360,6 +360,11 @@
           provider.getBlock("latest")        // includes timestamp (number)
         ]);
 
+        // DEBUG (now scoped correctly)
+        console.log("start raw:", start, "period raw:", period);
+        console.log("start Number:", Number(start), "period Number:", Number(period));
+        console.log("block.timestamp:", block.timestamp);
+
         const now = BigInt(block.timestamp); // chain time in seconds
 
         let windowMsg = "";
@@ -382,9 +387,6 @@
       } catch (e) {
         setTopStatus("Connected, but failed to read contract state: " + normalizeError(e), "error");
       }
-
-      console.log("start raw:", start, "period raw:", period);
-      console.log("start Number:", Number(start), "period Number:", Number(period));
 
       updateClaimButtonsUI();
     }
