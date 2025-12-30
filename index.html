@@ -353,11 +353,12 @@
       }
 
       try {
-        const [paused, start, period, block] = await Promise.all([
+        const [paused, start, period, block, alreadyClaimed] = await Promise.all([
           contract.paused(),                 // boolean
           contract.claimStartTime(),         // bigint
           contract.CLAIM_PERIOD(),           // bigint
-          provider.getBlock("latest")        // includes timestamp (number)
+          provider.getBlock("latest"),       // includes timestamp (number)
+          contract.claimed(signerAddress)    // boolean
         ]);
 
         // DEBUG (now scoped correctly)
@@ -381,7 +382,7 @@
         setNetworkLabel(Number(net.chainId));
 
         // Store as bigints (do not Number() them)
-        window.__claimContext = { paused, start, period, now, windowMsg };
+        window.__claimContext = { paused, start, period, now, windowMsg, alreadyClaimed };
 
         setTopStatus(`Connected: ${shortAddr(signerAddress)}. ${windowMsg}`, "ok");
       } catch (e) {
@@ -438,6 +439,13 @@
             btn.disabled = true;
             btn.classList.remove("claim-green");
             if (hint) hint.textContent = "Claim period has ended.";
+            return;
+          }
+
+          if (ctx.alreadyClaimed) {
+            btn.disabled = true;
+            btn.classList.remove("claim-green");
+            if (hint) hint.textContent = "Already claimed.";
             return;
           }
         }
