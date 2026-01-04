@@ -61,7 +61,7 @@
 
     <!-- NEW: notice at very top -->
     <div class="notice">
-      <p><strong>Notice:</strong> Due to testnet ETH limitations, the actual ETH you’ll receive is only <strong>1/1000</strong> of your displayed distribution amount.</p>
+      <p><strong>Notice:</strong> Due to testnet ETH limitations, the actual ETH you’ll receive is only <strong>1/10000</strong> of your displayed distribution amount.</p>
     </div>
 
     <header>
@@ -116,7 +116,7 @@
     const CLAIMS_JSON_URL = "./claims.json"; // or "./merkle.json" if that's your filename
 
     // NEW: visualization multiplier (does NOT affect tx)
-    const DISPLAY_MULTIPLIER = 1000;
+    const DISPLAY_MULTIPLIER = 10000;
 
     const BASE_SEPOLIA = {
       chainIdHex: "0x14a34", // 84532
@@ -277,7 +277,7 @@
 
         out.push({
           wallet: cs,
-          amountWeiStr,                 // used for transaction (actual 1/1000 values)
+          amountWeiStr,                 // used for transaction (actual 1/10000 values)
           amountEthDisplay: amountEthDisplayMultiplied, // used for table display (multiplied)
           proof
         });
